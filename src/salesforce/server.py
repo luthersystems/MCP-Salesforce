@@ -19,102 +19,101 @@ from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
 import mcp.server.stdio
 
+
 class SalesforceClient:
     """Handles Salesforce operations and caching."""
-    
+
     def __init__(self):
         self.sf: Optional[Salesforce] = None
         self.sobjects_cache: dict[str, Any] = {}
 
     def connect(self) -> bool:
-        """Establishes connection to Salesforce using environment variables.
-        
-        Returns:
-            bool: True if connection successful, False otherwise
-        """
+        """Establishes connection to Salesforce using environment variables."""
         try:
-            access_token = os.getenv('SALESFORCE_ACCESS_TOKEN')
-            instance_url = os.getenv('SALESFORCE_INSTANCE_URL')
-            domain = os.getenv('SALESFORCE_DOMAIN')
+            access_token = os.getenv("SALESFORCE_ACCESS_TOKEN")
+            instance_url = os.getenv("SALESFORCE_INSTANCE_URL")
+            domain = os.getenv("SALESFORCE_DOMAIN")
             if access_token and instance_url:
-                self.sf = Salesforce(
-                    instance_url=instance_url,
-                    session_id=access_token,
-                    domain=domain
-                )
+                self.sf = Salesforce(instance_url=instance_url, session_id=access_token, domain=domain)
                 return True
-            
+
             self.sf = Salesforce(
-                username=os.getenv('SALESFORCE_USERNAME'),
-                password=os.getenv('SALESFORCE_PASSWORD'),
-                security_token=os.getenv('SALESFORCE_SECURITY_TOKEN'),
-                domain=domain
+                username=os.getenv("SALESFORCE_USERNAME"),
+                password=os.getenv("SALESFORCE_PASSWORD"),
+                security_token=os.getenv("SALESFORCE_SECURITY_TOKEN"),
+                domain=domain,
             )
             return True
         except Exception as e:
             print(f"Salesforce connection failed: {str(e)}")
             return False
-    
+
     def get_object_fields(self, object_name: str) -> str:
-        """Retrieves field Names, labels and typesfor a specific Salesforce object.
-
-        Args:
-            object_name (str): The name of the Salesforce object.
-
-        Returns:
-            str: JSON representation of the object fields.
-        """
+        """Retrieves field metadata for a specific Salesforce object."""
         if not self.sf:
             raise ValueError("Salesforce connection not established.")
         if object_name not in self.sobjects_cache:
             sf_object = getattr(self.sf, object_name)
-            fields = sf_object.describe()['fields']
+            fields = sf_object.describe()["fields"]
             filtered_fields = []
             for field in fields:
-                filtered_fields.append({
-                    'label': field['label'],
-                    'name': field['name'],
-                    'updateable': field['updateable'],
-                    'type': field['type'],
-                    'length': field['length'],
-                    'picklistValues': field['picklistValues']
-                })
+                filtered_fields.append(
+                    {
+                        "label": field["label"],
+                        "name": field["name"],
+                        "updateable": field["updateable"],
+                        "type": field["type"],
+                        "length": field["length"],
+                        "picklistValues": field["picklistValues"],
+                    }
+                )
             self.sobjects_cache[object_name] = filtered_fields
-            
+
         return json.dumps(self.sobjects_cache[object_name], indent=2)
 
-# Create a server instance
+
+# --- Server Setup ---
 server = Server("salesforce-mcp")
 
-# Load environment variables
 load_dotenv()
 
-# Configure with Salesforce credentials from environment variables
 sf_client = SalesforceClient()
 if not sf_client.connect():
     print("Failed to initialize Salesforce connection")
-    # Optionally exit here if Salesforce is required
-    # sys.exit(1)
 
-# Add tool capabilities to run SOQL queries
+# Choose response format
+RESPONSE_FORMAT = os.getenv("SALESFORCE_RESPONSE_FORMAT", "text").lower()
+
+
+def format_response(title: str, data: Any) -> list[types.TextContent]:
+    """Return old prefixed text by default, or JSON when configured."""
+    if RESPONSE_FORMAT == "json":
+        formatted = json.dumps(data, indent=2)
+    else:
+        formatted = f"{title} (JSON):\n{json.dumps(data, indent=2)}"
+    return [types.TextContent(type="text", text=formatted)]
+
+
+def format_error(err: Exception) -> list[types.TextContent]:
+    """Formats errors consistently."""
+    if RESPONSE_FORMAT == "json":
+        formatted = json.dumps({"error": str(err)}, indent=2)
+    else:
+        formatted = f"Error: {str(err)}"
+    return [types.TextContent(type="text", text=formatted)]
+
+
+# --- Tools ---
 @server.list_tools()
 async def handle_list_tools() -> list[types.Tool]:
-    """
-    List available tools.
-    Each tool specifies its arguments using JSON Schema validation.
-    """
+    """List available Salesforce tools."""
     return [
         types.Tool(
             name="run_soql_query",
             description="Executes a SOQL query against Salesforce",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The SOQL query to execute",
-                    },
-                },
+                "properties": {"query": {"type": "string", "description": "The SOQL query to execute"}},
                 "required": ["query"],
             },
         ),
@@ -123,12 +122,7 @@ async def handle_list_tools() -> list[types.Tool]:
             description="Executes a SOSL search against Salesforce",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "search": {
-                        "type": "string",
-                        "description": "The SOSL search to execute (e.g., 'FIND {John Smith} IN ALL FIELDS')",
-                    },
-                },
+                "properties": {"search": {"type": "string", "description": "The SOSL search to execute"}},
                 "required": ["search"],
             },
         ),
@@ -137,12 +131,7 @@ async def handle_list_tools() -> list[types.Tool]:
             description="Retrieves field Names, labels and types for a specific Salesforce object",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "object_name": {
-                        "type": "string",
-                        "description": "The name of the Salesforce object (e.g., 'Account', 'Contact')",
-                    },
-                },
+                "properties": {"object_name": {"type": "string", "description": "Salesforce object name"}},
                 "required": ["object_name"],
             },
         ),
@@ -152,14 +141,8 @@ async def handle_list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "object_name": {
-                        "type": "string",
-                        "description": "The name of the Salesforce object (e.g., 'Account', 'Contact')",
-                    },
-                    "record_id": {
-                        "type": "string",
-                        "description": "The ID of the record to retrieve",
-                    },
+                    "object_name": {"type": "string"},
+                    "record_id": {"type": "string"},
                 },
                 "required": ["object_name", "record_id"],
             },
@@ -170,16 +153,8 @@ async def handle_list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "object_name": {
-                        "type": "string",
-                        "description": "The name of the Salesforce object (e.g., 'Account', 'Contact')",
-                    },
-                    "data": {
-                        "type": "object",
-                        "description": "The data for the new record",
-                        "properties": {},
-                        "additionalProperties": True,
-                    },
+                    "object_name": {"type": "string"},
+                    "data": {"type": "object", "additionalProperties": True},
                 },
                 "required": ["object_name", "data"],
             },
@@ -190,20 +165,9 @@ async def handle_list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "object_name": {
-                        "type": "string",
-                        "description": "The name of the Salesforce object (e.g., 'Account', 'Contact')",
-                    },
-                    "record_id": {
-                        "type": "string",
-                        "description": "The ID of the record to update",
-                    },
-                    "data": {
-                        "type": "object",
-                        "description": "The updated data for the record",
-                        "properties": {},
-                        "additionalProperties": True,
-                    },
+                    "object_name": {"type": "string"},
+                    "record_id": {"type": "string"},
+                    "data": {"type": "object", "additionalProperties": True},
                 },
                 "required": ["object_name", "record_id", "data"],
             },
@@ -214,14 +178,8 @@ async def handle_list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "object_name": {
-                        "type": "string",
-                        "description": "The name of the Salesforce object (e.g., 'Account', 'Contact')",
-                    },
-                    "record_id": {
-                        "type": "string",
-                        "description": "The ID of the record to delete",
-                    },
+                    "object_name": {"type": "string"},
+                    "record_id": {"type": "string"},
                 },
                 "required": ["object_name", "record_id"],
             },
@@ -232,22 +190,9 @@ async def handle_list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "action": {
-                        "type": "string",
-                        "description": "The Tooling API endpoint to call (e.g., 'sobjects/ApexClass')",
-                    },
-                    "method": {
-                        "type": "string",
-                        "description": "The HTTP method (default: 'GET')",
-                        "enum": ["GET", "POST", "PATCH", "DELETE"],
-                        "default": "GET",
-                    },
-                    "data": {
-                        "type": "object",
-                        "description": "Data for POST/PATCH requests",
-                        "properties": {},
-                        "additionalProperties": True,
-                    },
+                    "action": {"type": "string"},
+                    "method": {"type": "string", "enum": ["GET", "POST", "PATCH", "DELETE"], "default": "GET"},
+                    "data": {"type": "object", "additionalProperties": True},
                 },
                 "required": ["action"],
             },
@@ -258,22 +203,9 @@ async def handle_list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "action": {
-                        "type": "string",
-                        "description": "The Apex REST endpoint to call (e.g., '/MyApexClass')",
-                    },
-                    "method": {
-                        "type": "string",
-                        "description": "The HTTP method (default: 'GET')",
-                        "enum": ["GET", "POST", "PATCH", "DELETE"],
-                        "default": "GET",
-                    },
-                    "data": {
-                        "type": "object",
-                        "description": "Data for POST/PATCH requests",
-                        "properties": {},
-                        "additionalProperties": True,
-                    },
+                    "action": {"type": "string"},
+                    "method": {"type": "string", "enum": ["GET", "POST", "PATCH", "DELETE"], "default": "GET"},
+                    "data": {"type": "object", "additionalProperties": True},
                 },
                 "required": ["action"],
             },
@@ -284,191 +216,94 @@ async def handle_list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "The path of the REST API endpoint (e.g., 'sobjects/Account/describe')",
-                    },
-                    "method": {
-                        "type": "string",
-                        "description": "The HTTP method (default: 'GET')",
-                        "enum": ["GET", "POST", "PATCH", "DELETE"],
-                        "default": "GET",
-                    },
-                    "params": {
-                        "type": "object",
-                        "description": "Query parameters for the request",
-                        "properties": {},
-                        "additionalProperties": True,
-                    },
-                    "data": {
-                        "type": "object",
-                        "description": "Data for POST/PATCH requests",
-                        "properties": {},
-                        "additionalProperties": True,
-                    },
+                    "path": {"type": "string"},
+                    "method": {"type": "string", "enum": ["GET", "POST", "PATCH", "DELETE"], "default": "GET"},
+                    "params": {"type": "object", "additionalProperties": True},
+                    "data": {"type": "object", "additionalProperties": True},
                 },
                 "required": ["path"],
             },
         ),
     ]
 
+
 @server.call_tool()
-async def handle_call_tool(name: str, arguments: dict[str, str]) -> list[types.TextContent]:
-    if name == "run_soql_query":
-        query = arguments.get("query")
-        if not query:
-            raise ValueError("Missing 'query' argument")
-
-        results = sf_client.sf.query_all(query)
-        return [
-            types.TextContent(
-                type="text",
-                text=f"SOQL Query Results (JSON):\n{json.dumps(results, indent=2)}",
-            )
-        ]
-    elif name == "run_sosl_search":
-        search = arguments.get("search")
-        if not search:
-            raise ValueError("Missing 'search' argument")
-
-        results = sf_client.sf.search(search)
-        return [
-            types.TextContent(
-                type="text",
-                text=f"SOSL Search Results (JSON):\n{json.dumps(results, indent=2)}",
-            )
-        ]
-    elif name == "get_object_fields":
-        object_name = arguments.get("object_name")
-        if not object_name:
-            raise ValueError("Missing 'object_name' argument")
-        if not sf_client.sf:
-            raise ValueError("Salesforce connection not established.")
-        results = sf_client.get_object_fields(object_name)
-        return [
-            types.TextContent(
-                type="text",
-                text=f"{object_name} Metadata (JSON):\n{results}",
-            )
-        ]
-    elif name == "get_record":
-        object_name = arguments.get("object_name")
-        record_id = arguments.get("record_id")
-        if not object_name or not record_id:
-            raise ValueError("Missing 'object_name' or 'record_id' argument")
-        if not sf_client.sf:
-            raise ValueError("Salesforce connection not established.")
-        sf_object = getattr(sf_client.sf, object_name)
-        results = sf_object.get(record_id)
-        return [
-            types.TextContent(
-                type="text",
-                text=f"{object_name} Record (JSON):\n{json.dumps(results, indent=2)}",
-            )
-        ]
-    elif name == "create_record":
-        object_name = arguments.get("object_name")
-        data = arguments.get("data")
-        if not object_name or not data:
-            raise ValueError("Missing 'object_name' or 'data' argument")
-        if not sf_client.sf:
-            raise ValueError("Salesforce connection not established.")
-        sf_object = getattr(sf_client.sf, object_name)
-        results = sf_object.create(data)
-        return [
-            types.TextContent(
-                type="text",
-                text=f"Create {object_name} Record Result (JSON):\n{json.dumps(results, indent=2)}",
-            )
-        ]
-    elif name == "update_record":
-        object_name = arguments.get("object_name")
-        record_id = arguments.get("record_id")
-        data = arguments.get("data")
-        if not object_name or not record_id or not data:
-            raise ValueError("Missing 'object_name', 'record_id', or 'data' argument")
-        if not sf_client.sf:
-            raise ValueError("Salesforce connection not established.")
-        sf_object = getattr(sf_client.sf, object_name)
-        results = sf_object.update(record_id, data)
-        return [
-            types.TextContent(
-                type="text",
-                text=f"Update {object_name} Record Result: {results}",
-            )
-        ]
-    elif name == "delete_record":
-        object_name = arguments.get("object_name")
-        record_id = arguments.get("record_id")
-        if not object_name or not record_id:
-            raise ValueError("Missing 'object_name' or 'record_id' argument")
-        if not sf_client.sf:
-            raise ValueError("Salesforce connection not established.")
-        sf_object = getattr(sf_client.sf, object_name)
-        results = sf_object.delete(record_id)
-        return [
-            types.TextContent(
-                type="text",
-                text=f"Delete {object_name} Record Result: {results}",
-            )
-        ]
-    elif name == "tooling_execute":
-        action = arguments.get("action")
-        method = arguments.get("method", "GET")
-        data = arguments.get("data")
-
-        if not action:
-            raise ValueError("Missing 'action' argument")
+async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
+    try:
         if not sf_client.sf:
             raise ValueError("Salesforce connection not established.")
 
-        results = sf_client.sf.toolingexecute(action, method=method, data=data)
-        return [
-            types.TextContent(
-                type="text",
-                text=f"Tooling Execute Result (JSON):\n{json.dumps(results, indent=2)}",
+        if name == "run_soql_query":
+            query = arguments.get("query")
+            if not query:
+                raise ValueError("Missing 'query' argument")
+            results = sf_client.sf.query_all(query)
+            return format_response("SOQL Query Results", results)
+
+        elif name == "run_sosl_search":
+            search = arguments.get("search")
+            if not search:
+                raise ValueError("Missing 'search' argument")
+            results = sf_client.sf.search(search)
+            return format_response("SOSL Search Results", results)
+
+        elif name == "get_object_fields":
+            object_name = arguments.get("object_name")
+            if not object_name:
+                raise ValueError("Missing 'object_name' argument")
+            results = sf_client.get_object_fields(object_name)
+            return format_response(f"{object_name} Metadata", json.loads(results))
+
+        elif name == "get_record":
+            sf_object = getattr(sf_client.sf, arguments["object_name"])
+            results = sf_object.get(arguments["record_id"])
+            return format_response(f"{arguments['object_name']} Record", results)
+
+        elif name == "create_record":
+            sf_object = getattr(sf_client.sf, arguments["object_name"])
+            results = sf_object.create(arguments["data"])
+            return format_response(f"Create {arguments['object_name']} Record Result", results)
+
+        elif name == "update_record":
+            sf_object = getattr(sf_client.sf, arguments["object_name"])
+            sf_object.update(arguments["record_id"], arguments["data"])
+            return format_response(f"Update {arguments['object_name']} Record Result", {"success": True})
+
+        elif name == "delete_record":
+            sf_object = getattr(sf_client.sf, arguments["object_name"])
+            sf_object.delete(arguments["record_id"])
+            return format_response(f"Delete {arguments['object_name']} Record Result", {"success": True})
+
+        elif name == "tooling_execute":
+            results = sf_client.sf.toolingexecute(
+                arguments["action"], method=arguments.get("method", "GET"), data=arguments.get("data")
             )
-        ]
+            return format_response("Tooling Execute Result", results)
 
-    elif name == "apex_execute":
-        action = arguments.get("action")
-        method = arguments.get("method", "GET")
-        data = arguments.get("data")
-
-        if not action:
-            raise ValueError("Missing 'action' argument")
-        if not sf_client.sf:
-            raise ValueError("Salesforce connection not established.")
-
-        results = sf_client.sf.apexecute(action, method=method, data=data)
-        return [
-            types.TextContent(
-                type="text",
-                text=f"Apex Execute Result (JSON):\n{json.dumps(results, indent=2)}",
+        elif name == "apex_execute":
+            results = sf_client.sf.apexecute(
+                arguments["action"], method=arguments.get("method", "GET"), data=arguments.get("data")
             )
-        ]
-    elif name == "restful":
-        path = arguments.get("path")
-        method = arguments.get("method", "GET")
-        params = arguments.get("params")
-        data = arguments.get("data")
+            return format_response("Apex Execute Result", results)
 
-        if not path:
-            raise ValueError("Missing 'path' argument")
-        if not sf_client.sf:
-            raise ValueError("Salesforce connection not established.")
-
-        results = sf_client.sf.restful(path, method=method, params=params, json=data)
-        return [
-            types.TextContent(
-                type="text",
-                text=f"RESTful API Call Result (JSON):\n{json.dumps(results, indent=2)}",
+        elif name == "restful":
+            results = sf_client.sf.restful(
+                arguments["path"],
+                method=arguments.get("method", "GET"),
+                params=arguments.get("params"),
+                json=arguments.get("data"),
             )
-        ]
-    raise ValueError(f"Unknown tool: {name}")
+            return format_response("RESTful API Call Result", results)
 
-# Add prompt capabilities for common data analysis tasks
+        raise ValueError(f"Unknown tool: {name}")
 
+    except SalesforceError as e:
+        return format_error(e)
+    except Exception as e:
+        return format_error(e)
+
+
+# --- Main Entry ---
 async def run():
     async with mcp.server.stdio.stdio_server() as (read, write):
         await server.run(
@@ -476,7 +311,7 @@ async def run():
             write,
             InitializationOptions(
                 server_name="salesforce-mcp",
-                server_version="0.1.5",
+                server_version="0.1.9",
                 capabilities=server.get_capabilities(
                     notification_options=NotificationOptions(),
                     experimental_capabilities={},
@@ -484,5 +319,9 @@ async def run():
             ),
         )
 
+
 if __name__ == "__main__":
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        print("Salesforce MCP server stopped.")
